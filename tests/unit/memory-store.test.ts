@@ -37,6 +37,24 @@ describe("MemoryStore", () => {
     const value = store.read("lang");
     expect(value).toBe("Go");
   });
+
+  it("getAllFacts returns only user-confirmed non-empty entries", () => {
+    store.writeFact("lang", "Go");
+    store.writeFact("framework", "Fiber");
+    store.writeSummary("summary:1", "fallible text");
+    const facts = store.getAllFacts();
+    const keys = facts.map((f) => f.key);
+    expect(keys).toContain("lang");
+    expect(keys).toContain("framework");
+    expect(keys).not.toContain("summary:1");
+  });
+
+  it("getAllFacts excludes cleared (empty-value) facts", () => {
+    store.writeFact("lang", "Go");
+    store.writeFact("lang", "");      // cleared via /forget
+    const facts = store.getAllFacts();
+    expect(facts.find((f) => f.key === "lang")).toBeUndefined();
+  });
 });
 
 describe("session helpers", () => {

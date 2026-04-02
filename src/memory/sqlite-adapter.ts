@@ -110,6 +110,15 @@ export class SqliteAdapter {
       .run(sessionId);
   }
 
+  /** Return all user-confirmed facts (non-empty value, non-fallible). */
+  getAllFacts(): Array<{ key: string; value: string }> {
+    return this.db
+      .prepare(
+        "SELECT key, value FROM memory WHERE user_confirmed = 1 AND value != '' ORDER BY updated_at DESC"
+      )
+      .all() as Array<{ key: string; value: string }>;
+  }
+
   close(): void {
     this.db.close();
   }

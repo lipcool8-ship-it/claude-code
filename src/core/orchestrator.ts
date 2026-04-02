@@ -11,6 +11,7 @@ import type { SessionInfo } from "../memory/session.js";
 import { nextTurn } from "../memory/session.js";
 import type { MemoryStore } from "../memory/store.js";
 import { handleSlashCommand } from "../cli/slash-commands.js";
+import { IdleSummarizer } from "../daemons/idle-summarizer.js";
 
 export const MAX_TOOL_CHAIN_DEPTH = 10;
 
@@ -23,6 +24,7 @@ export class Orchestrator {
   private messages: Message[] = [];
   private rl: readline.Interface;
   private toolChainDepth = 0;
+  private summarizer: IdleSummarizer;
 
   constructor(
     config: Config,
@@ -36,51 +38,74 @@ export class Orchestrator {
     this.session = session;
     this.client = new LLMClient(config);
     this.rl = readline.createInterface({ input, output });
+    this.summarizer = new IdleSummarizer(store, this.client);
+  }
+
+  private buildPrompt(): string {
+    return buildSystemPrompt(
+      this.config,
+      this.session,
+      this.config.token_budget,
+      this.store.getAllFacts()
+    );
   }
 
   async run(): Promise<void> {
-    const systemPrompt = buildSystemPrompt(
-      this.config,
-      this.session,
-      this.config.token_budget
-    );
-    this.messages = [{ role: "system", content: systemPrompt }];
+    this.messages = [{ role: "system", content: this.buildPrompt() }];
 
+    this.summarizer.start();
     console.log('Agent ready. Type your request, or /help for commands.\n');
 
-    while (true) {
-      const userInput = await this.rl.question("You: ");
-      const trimmed = userInput.trim();
+    try {
+      while (true) {
+        const userInput = await this.rl.question("You: ");
+        const trimmed = userInput.trim();
 
-      // Handle slash commands before sending to LLM
-      const slashResult = handleSlashCommand(
-        trimmed,
-        this.session,
-        this.store,
-        this.audit
-      );
-      if (slashResult !== undefined) {
-        if (slashResult.message) console.log(`\n${slashResult.message}\n`);
-        if (slashResult.exit) break;
-        continue;
+        // Handle slash commands before sending to LLM
+        const slashResult = handleSlashCommand(
+          trimmed,
+          this.session,
+          this.store,
+          this.audit
+        );
+        if (slashResult !== undefined) {
+          if (slashResult.message) console.log(`\n${slashResult.message}\n`);
+          if (slashResult.exit) break;
+          // After a /remember, refresh the system prompt so the new fact is visible
+          this.messages[0] = { role: "system", content: this.buildPrompt() };
+          continue;
+        }
+
+        // Legacy bare "exit" support
+        if (trimmed.toLowerCase() === "exit") break;
+
+        this.audit.log(this.session.id, "user_input", { length: userInput.length });
+        this.messages.push({ role: "user", content: userInput });
+
+        await this.runTurn();
       }
-
-      // Legacy bare "exit" support
-      if (trimmed.toLowerCase() === "exit") break;
-
-      this.audit.log(this.session.id, "user_input", { length: userInput.length });
-      this.messages.push({ role: "user", content: userInput });
-
-      await this.runTurn();
+    } finally {
+      this.summarizer.stop();
+      this.rl.close();
     }
-
-    this.rl.close();
   }
 
   private async runTurn(): Promise<void> {
     this.session = nextTurn(this.session, this.store);
 
-    const response = await this.client.completeWithRepair(this.messages);
+    // Refresh the system prompt with current turn_count and latest facts
+    this.messages[0] = { role: "system", content: this.buildPrompt() };
+
+    let response;
+    try {
+      response = await this.client.completeWithRepair(this.messages);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`\n[Agent] LLM error: ${msg}\n`);
+      this.audit.log(this.session.id, "llm_error", { error: msg });
+      return;
+    }
+
     this.audit.log(this.session.id, "llm_response", {
       has_content: response.content !== null,
       tool_calls: response.tool_calls.length,
@@ -91,6 +116,14 @@ export class Orchestrator {
       const content = response.content ?? "";
       console.log(`\nAgent: ${content}\n`);
       this.messages.push({ role: "assistant", content });
+
+      // Feed the completed exchange to the idle summarizer
+      const recentTurns = this.messages
+        .slice(-6)
+        .filter((m) => m.role !== "system")
+        .map((m) => `${m.role}: ${m.content}`)
+        .join("\n");
+      void this.summarizer.runOnce(recentTurns);
       return;
     }
 

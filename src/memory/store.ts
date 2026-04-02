@@ -26,6 +26,11 @@ export class MemoryStore {
     return this.adapter.getEffectiveMemory(key)?.value;
   }
 
+  /** Return all user-confirmed facts for injection into the system prompt. */
+  getAllFacts(): Array<{ key: string; value: string }> {
+    return this.adapter.getAllFacts();
+  }
+
   upsertSession(id: string, model: string, policyName: string): void {
     this.adapter.upsertSession(id, model, policyName);
   }

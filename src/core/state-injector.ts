@@ -19,7 +19,8 @@ function loadSystemPrompt(): string {
 export function buildSystemPrompt(
   config: Config,
   session: SessionInfo,
-  tokenBudget: number
+  tokenBudget: number,
+  userFacts: Array<{ key: string; value: string }> = []
 ): string {
   const base = loadSystemPrompt();
   const state = JSON.stringify(
@@ -39,5 +40,15 @@ export function buildSystemPrompt(
     null,
     2
   );
-  return `${base}\n\n<state>\n${state}\n</state>`;
+
+  let prompt = `${base}\n\n<state>\n${state}\n</state>`;
+
+  if (userFacts.length > 0) {
+    const factsBlock = userFacts
+      .map(({ key, value }) => `  ${key}: ${value}`)
+      .join("\n");
+    prompt += `\n\n<user_facts>\n${factsBlock}\n</user_facts>`;
+  }
+
+  return prompt;
 }

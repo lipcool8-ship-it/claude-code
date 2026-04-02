@@ -69,4 +69,35 @@ describe("buildSystemPrompt", () => {
     const prompt = buildSystemPrompt(testConfig, testSession, 50_000);
     expect(prompt).toContain('"strict_schema_mode": true');
   });
+
+  it("omits <user_facts> block when no facts provided", () => {
+    const prompt = buildSystemPrompt(testConfig, testSession, 50_000);
+    expect(prompt).not.toContain("<user_facts>");
+  });
+
+  it("omits <user_facts> block when empty array is provided", () => {
+    const prompt = buildSystemPrompt(testConfig, testSession, 50_000, []);
+    expect(prompt).not.toContain("<user_facts>");
+  });
+
+  it("injects <user_facts> block when facts are provided", () => {
+    const prompt = buildSystemPrompt(testConfig, testSession, 50_000, [
+      { key: "lang", value: "Go" },
+      { key: "framework", value: "Fiber" },
+    ]);
+    expect(prompt).toContain("<user_facts>");
+    expect(prompt).toContain("</user_facts>");
+    expect(prompt).toContain("lang: Go");
+    expect(prompt).toContain("framework: Fiber");
+  });
+
+  it("<user_facts> block appears after </state>", () => {
+    const prompt = buildSystemPrompt(testConfig, testSession, 50_000, [
+      { key: "x", value: "1" },
+    ]);
+    const stateEnd = prompt.indexOf("</state>");
+    const factsStart = prompt.indexOf("<user_facts>");
+    expect(stateEnd).toBeGreaterThan(-1);
+    expect(factsStart).toBeGreaterThan(stateEnd);
+  });
 });
