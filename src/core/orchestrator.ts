@@ -11,6 +11,8 @@ import type { SessionInfo } from "../memory/session.js";
 import { nextTurn } from "../memory/session.js";
 import type { MemoryStore } from "../memory/store.js";
 
+export const MAX_TOOL_CHAIN_DEPTH = 10;
+
 export class Orchestrator {
   private client: LLMClient;
   private config: Config;
@@ -19,6 +21,7 @@ export class Orchestrator {
   private session: SessionInfo;
   private messages: Message[] = [];
   private rl: readline.Interface;
+  private toolChainDepth = 0;
 
   constructor(
     config: Config,
@@ -118,7 +121,19 @@ export class Orchestrator {
     }
 
     // Continue the conversation with tool results
+    this.toolChainDepth += 1;
+    if (this.toolChainDepth >= MAX_TOOL_CHAIN_DEPTH) {
+      this.toolChainDepth = 0;
+      console.error(
+        `\n[Agent] Tool chain depth limit (${MAX_TOOL_CHAIN_DEPTH}) reached. Stopping this turn.\n`
+      );
+      this.audit.log(this.session.id, "tool_chain_limit_reached", {
+        depth: MAX_TOOL_CHAIN_DEPTH,
+      });
+      return;
+    }
     await this.runTurn();
+    this.toolChainDepth = 0;
   }
 
   private async handleWriteApproval(argsJson: string): Promise<boolean> {
