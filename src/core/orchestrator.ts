@@ -96,6 +96,10 @@ export class Orchestrator {
           if (slashResult.message) console.log(`\n${slashResult.message}\n`);
           if (slashResult.exit) break;
           if (slashResult.reload) {
+            // Reload is handled here — in the outer input loop, always between turns.
+            // runTurn() is never executing concurrently with this code path because
+            // the loop awaits runTurn() before accepting the next user input, so
+            // hot-swapping config here is safe and cannot race with an active turn.
             if (this.configPath) {
               try {
                 const newConfig = loadConfig(this.configPath);
@@ -152,6 +156,11 @@ export class Orchestrator {
     }
 
     this.tokenBudget -= response.usage?.total_tokens ?? 0;
+    if (this.tokenBudget < 0) {
+      this.tokenBudget = 0;
+      console.warn("\n[Agent] Token budget exhausted.\n");
+      this.audit.log(this.session.id, "budget_exhausted", {});
+    }
 
     this.audit.log(this.session.id, "llm_response", {
       has_content: response.content !== null,

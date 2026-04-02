@@ -438,6 +438,45 @@ describe("Orchestrator — token budget tracking", () => {
     expect(statusOutput).toContain("Budget");
     expect(statusOutput).toContain((config.token_budget - 100).toLocaleString());
   });
+
+  it("clamps tokenBudget at zero when usage exceeds the remaining budget", async () => {
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["hello", "/exit"]);
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    // Report more tokens than the entire budget
+    const llm = fakeLlm([
+      { content: "Hi!", tool_calls: [], usage: { total_tokens: config.token_budget + 5_000 } },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+    warnSpy.mockRestore();
+
+    // Budget must not go negative
+    expect(orch.getTokenBudget()).toBe(0);
+  });
+
+  it("emits budget_exhausted audit event when budget is first exceeded", async () => {
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["hello", "/exit"]);
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    const llm = fakeLlm([
+      { content: "Hi!", tool_calls: [], usage: { total_tokens: config.token_budget + 1 } },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+    warnSpy.mockRestore();
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("budget_exhausted");
+  });
 });
 
 describe("Orchestrator — config live reload", () => {
