@@ -106,6 +106,15 @@ export function execFileNoThrowWithCwd(
   },
 ): Promise<{ stdout: string; stderr: string; code: number; error?: string }> {
   return new Promise(resolve => {
+    // Prevent unsafe use of shell mode with arguments, which could allow
+    // untrusted input in `args` to be interpreted by a shell.
+    if (shell === true && args.length > 0) {
+      throw new Error(
+        'execFileNoThrowWithCwd: shell=true with arguments is not supported; ' +
+          'use argument arrays without shell, or invoke execa directly for trusted commands.',
+      )
+    }
+
     // Use execa for cross-platform .bat/.cmd compatibility on Windows
     execa(file, args, {
       maxBuffer,
