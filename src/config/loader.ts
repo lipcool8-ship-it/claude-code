@@ -35,6 +35,23 @@ export function loadConfig(configPath = ".agent/config.json"): Config {
   if (process.env["AGENT_LOCAL_FALLBACK"] === "1") {
     envConfig["local_model_fallback"] = true;
   }
+  if (process.env["AGENT_MAX_TOKENS"]) {
+    const v = Number(process.env["AGENT_MAX_TOKENS"]);
+    if (!Number.isNaN(v)) envConfig["max_tokens"] = v;
+  }
+  if (process.env["AGENT_TOKEN_BUDGET"]) {
+    const v = Number(process.env["AGENT_TOKEN_BUDGET"]);
+    if (!Number.isNaN(v)) envConfig["token_budget"] = v;
+  }
+  if (process.env["AGENT_STRICT_SCHEMA"] !== undefined) {
+    envConfig["strict_schema_mode"] = process.env["AGENT_STRICT_SCHEMA"] !== "0";
+  }
+  if (process.env["AGENT_DB_PATH"]) {
+    envConfig["db_path"] = process.env["AGENT_DB_PATH"];
+  }
+  if (process.env["AGENT_AUDIT_LOG"]) {
+    envConfig["audit_log_path"] = process.env["AGENT_AUDIT_LOG"];
+  }
 
   const merged = { ...DEFAULTS, ...fileConfig, ...envConfig };
   return ConfigSchema.parse(merged);

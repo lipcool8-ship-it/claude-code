@@ -47,8 +47,9 @@ program
     try {
       await orchestrator.run();
     } finally {
-      endSession(session, store);
-      audit.log(session.id, "session_end", { turn_count: session.turnCount });
+      const finalSession = orchestrator.getSession();
+      endSession(finalSession, store);
+      audit.log(session.id, "session_end", { turn_count: finalSession.turnCount });
       store.close();
     }
   });

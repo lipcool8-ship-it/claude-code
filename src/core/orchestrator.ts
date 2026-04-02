@@ -15,6 +15,12 @@ import { IdleSummarizer } from "../daemons/idle-summarizer.js";
 
 export const MAX_TOOL_CHAIN_DEPTH = 10;
 
+/** Minimal readline interface subset used by the Orchestrator (injectable for tests). */
+export interface RlInterface {
+  question(prompt: string): Promise<string>;
+  close(): void;
+}
+
 export class Orchestrator {
   private client: LLMClient;
   private config: Config;
@@ -22,7 +28,7 @@ export class Orchestrator {
   private store: MemoryStore;
   private session: SessionInfo;
   private messages: Message[] = [];
-  private rl: readline.Interface;
+  private rl: RlInterface;
   private toolChainDepth = 0;
   private summarizer: IdleSummarizer;
 
@@ -30,15 +36,21 @@ export class Orchestrator {
     config: Config,
     audit: AuditLogger,
     store: MemoryStore,
-    session: SessionInfo
+    session: SessionInfo,
+    rl?: RlInterface
   ) {
     this.config = config;
     this.audit = audit;
     this.store = store;
     this.session = session;
     this.client = new LLMClient(config);
-    this.rl = readline.createInterface({ input, output });
+    this.rl = rl ?? readline.createInterface({ input, output });
     this.summarizer = new IdleSummarizer(store, this.client);
+  }
+
+  /** Returns the current session (updated turn_count etc.) after run() completes. */
+  getSession(): SessionInfo {
+    return this.session;
   }
 
   private buildPrompt(): string {
