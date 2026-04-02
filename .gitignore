@@ -1,0 +1,23 @@
+# runtime / build output
+dist/
+node_modules/
+.agent/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/
+*.swp
+
+# test / coverage
+coverage/
+.nyc_output/
+node_modules/.vite/
+
+# env
+.env
+.env.*
+!.env.example

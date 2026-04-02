@@ -10,6 +10,7 @@ import type { Config } from "../config/schema.js";
 import type { SessionInfo } from "../memory/session.js";
 import { nextTurn } from "../memory/session.js";
 import type { MemoryStore } from "../memory/store.js";
+import { handleSlashCommand } from "../cli/slash-commands.js";
 
 export const MAX_TOOL_CHAIN_DEPTH = 10;
 
@@ -45,11 +46,27 @@ export class Orchestrator {
     );
     this.messages = [{ role: "system", content: systemPrompt }];
 
-    console.log('Agent ready. Type your request, or "exit" to quit.\n');
+    console.log('Agent ready. Type your request, or /help for commands.\n');
 
     while (true) {
       const userInput = await this.rl.question("You: ");
-      if (userInput.trim().toLowerCase() === "exit") break;
+      const trimmed = userInput.trim();
+
+      // Handle slash commands before sending to LLM
+      const slashResult = handleSlashCommand(
+        trimmed,
+        this.session,
+        this.store,
+        this.audit
+      );
+      if (slashResult !== undefined) {
+        if (slashResult.message) console.log(`\n${slashResult.message}\n`);
+        if (slashResult.exit) break;
+        continue;
+      }
+
+      // Legacy bare "exit" support
+      if (trimmed.toLowerCase() === "exit") break;
 
       this.audit.log(this.session.id, "user_input", { length: userInput.length });
       this.messages.push({ role: "user", content: userInput });
