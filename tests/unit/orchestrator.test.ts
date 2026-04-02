@@ -23,6 +23,7 @@ import type { LLMClient, LLMResponse } from "../../src/core/llm-client.js";
 import "../../src/tools/definitions/read-file.js";
 import "../../src/tools/definitions/write-file.js";
 import "../../src/tools/definitions/list-dir.js";
+import { registerBashTool } from "../../src/tools/definitions/bash.js";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -531,5 +532,260 @@ describe("Orchestrator — config live reload", () => {
 
     expect(logLines.join("\n")).toContain("reload skipped");
     expect(orch.getTokenBudget()).toBe(config.token_budget);
+  });
+});
+
+// ─── Orchestrator — bash tool integration ───────────────────────────────────
+//
+// These tests exercise the full Orchestrator → invokeToolCall → bash tool path.
+// The bash tool is re-registered in each test so the per-test tmpDir is reflected
+// in the allowedPaths closure.
+
+describe("Orchestrator — bash tool: successful command", () => {
+  it("executes bash and surfaces exit_code 0 in the tool result message", async () => {
+    const bashConfig: Config = {
+      ...config,
+      bash_timeout_ms: 5_000,
+      bash_output_cap_bytes: 65_536,
+      policy: {
+        ...config.policy,
+        allowed_tools: ["read_file", "write_file", "list_dir", "bash"],
+      },
+    };
+    registerBashTool(bashConfig);
+
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["run echo", "/exit"]);
+    const orch = new Orchestrator(bashConfig, audit, store, session, rl);
+    const llm = fakeLlm([
+      {
+        content: null,
+        tool_calls: [
+          {
+            id: "b1",
+            function: {
+              name: "bash",
+              arguments: JSON.stringify({ command: "echo hello-world", cwd: tmpDir }),
+            },
+          },
+        ],
+      },
+      { content: "Done.", tool_calls: [] },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("tool_start");
+    expect(events).toContain("tool_complete");
+    expect(events).not.toContain("tool_denied");
+
+    const messages = (orch as unknown as Record<string, unknown>)["messages"] as Array<{
+      role: string;
+      content: string;
+    }>;
+    const toolMsg = messages.find((m) => m.role === "tool");
+    expect(toolMsg?.content).toContain("exit_code");
+    expect(toolMsg?.content).toContain("hello-world");
+  });
+});
+
+describe("Orchestrator — bash tool: timeout", () => {
+  it("emits tool_timeout audit event and returns timed_out in the tool result", async () => {
+    const bashConfig: Config = {
+      ...config,
+      bash_timeout_ms: 150,
+      bash_output_cap_bytes: 65_536,
+      policy: {
+        ...config.policy,
+        allowed_tools: ["read_file", "write_file", "list_dir", "bash"],
+      },
+    };
+    registerBashTool(bashConfig);
+
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["run sleep", "/exit"]);
+    const orch = new Orchestrator(bashConfig, audit, store, session, rl);
+    const llm = fakeLlm([
+      {
+        content: null,
+        tool_calls: [
+          {
+            id: "b2",
+            function: {
+              name: "bash",
+              arguments: JSON.stringify({ command: "sleep 10", cwd: tmpDir }),
+            },
+          },
+        ],
+      },
+      { content: "Timed out.", tool_calls: [] },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("tool_timeout");
+
+    const messages = (orch as unknown as Record<string, unknown>)["messages"] as Array<{
+      role: string;
+      content: string;
+    }>;
+    const toolMsg = messages.find((m) => m.role === "tool");
+    expect(toolMsg?.content).toContain("timed_out");
+  }, 5_000);
+});
+
+describe("Orchestrator — bash tool: output truncation", () => {
+  it("emits tool_output_truncated audit event and includes truncation notice in result", async () => {
+    const bashConfig: Config = {
+      ...config,
+      bash_timeout_ms: 5_000,
+      bash_output_cap_bytes: 20,
+      policy: {
+        ...config.policy,
+        allowed_tools: ["read_file", "write_file", "list_dir", "bash"],
+      },
+    };
+    registerBashTool(bashConfig);
+
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["run big output", "/exit"]);
+    const orch = new Orchestrator(bashConfig, audit, store, session, rl);
+    const llm = fakeLlm([
+      {
+        content: null,
+        tool_calls: [
+          {
+            id: "b3",
+            function: {
+              name: "bash",
+              arguments: JSON.stringify({
+                command: "printf 'abcdefghijklmnopqrstuvwxyz1234'",
+                cwd: tmpDir,
+              }),
+            },
+          },
+        ],
+      },
+      { content: "Truncated.", tool_calls: [] },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("tool_output_truncated");
+
+    const messages = (orch as unknown as Record<string, unknown>)["messages"] as Array<{
+      role: string;
+      content: string;
+    }>;
+    const toolMsg = messages.find((m) => m.role === "tool");
+    expect(toolMsg?.content).toContain("truncated");
+  });
+});
+
+describe("Orchestrator — bash tool: denied cwd escape", () => {
+  it("policy denies the tool call when cwd is outside allowed_paths", async () => {
+    const bashConfig: Config = {
+      ...config,
+      bash_timeout_ms: 5_000,
+      bash_output_cap_bytes: 65_536,
+      policy: {
+        ...config.policy,
+        allowed_tools: ["read_file", "write_file", "list_dir", "bash"],
+      },
+    };
+    registerBashTool(bashConfig);
+
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["escape attempt", "/exit"]);
+    const orch = new Orchestrator(bashConfig, audit, store, session, rl);
+    const llm = fakeLlm([
+      {
+        content: null,
+        tool_calls: [
+          {
+            id: "b4",
+            function: {
+              name: "bash",
+              arguments: JSON.stringify({ command: "cat /etc/passwd", cwd: "/etc" }),
+            },
+          },
+        ],
+      },
+      { content: "Denied.", tool_calls: [] },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("tool_denied");
+    expect(events).not.toContain("tool_start");
+
+    const deniedEvent = readAuditEvents(auditPath).find((e) => e.event === "tool_denied");
+    expect(String(deniedEvent?.metadata["reason"] ?? "")).toContain("/etc");
+  });
+});
+
+describe("Orchestrator — bash tool: non-zero exit code", () => {
+  it("surfaces non-zero exit_code in the tool result without crashing the session", async () => {
+    const bashConfig: Config = {
+      ...config,
+      bash_timeout_ms: 5_000,
+      bash_output_cap_bytes: 65_536,
+      policy: {
+        ...config.policy,
+        allowed_tools: ["read_file", "write_file", "list_dir", "bash"],
+      },
+    };
+    registerBashTool(bashConfig);
+
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["run failing command", "/exit"]);
+    const orch = new Orchestrator(bashConfig, audit, store, session, rl);
+    const llm = fakeLlm([
+      {
+        content: null,
+        tool_calls: [
+          {
+            id: "b5",
+            function: {
+              name: "bash",
+              arguments: JSON.stringify({ command: "exit 7", cwd: tmpDir }),
+            },
+          },
+        ],
+      },
+      { content: "Command failed.", tool_calls: [] },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    // Session must remain alive — two LLM calls expected
+    expect(llm.completeWithRepair).toHaveBeenCalledTimes(2);
+
+    const messages = (orch as unknown as Record<string, unknown>)["messages"] as Array<{
+      role: string;
+      content: string;
+    }>;
+    const toolMsg = messages.find((m) => m.role === "tool");
+    const parsed = JSON.parse(toolMsg?.content ?? "{}") as { exit_code?: number };
+    expect(parsed.exit_code).toBe(7);
   });
 });

@@ -13,6 +13,7 @@ import type { MemoryStore } from "../memory/store.js";
 import { handleSlashCommand } from "../cli/slash-commands.js";
 import { IdleSummarizer } from "../daemons/idle-summarizer.js";
 import { loadConfig } from "../config/loader.js";
+import { registerBashTool } from "../tools/definitions/bash.js";
 
 export const MAX_TOOL_CHAIN_DEPTH = 10;
 
@@ -106,6 +107,7 @@ export class Orchestrator {
                 this.config = newConfig;
                 this.client = new LLMClient(newConfig);
                 this.tokenBudget = newConfig.token_budget;
+                registerBashTool(newConfig);
                 this.summarizer.stop();
                 this.summarizer = new IdleSummarizer(this.store, this.client);
                 this.summarizer.start();

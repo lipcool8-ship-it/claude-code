@@ -21,7 +21,7 @@ export function evaluatePolicy(
   }
 
   // 2. For file-targeting tools, check allowed_paths and deny_patterns
-  const path = (args["path"] ?? args["file"] ?? "") as string;
+  const path = (args["path"] ?? args["file"] ?? args["cwd"] ?? "") as string;
   if (path) {
     const pathAllowed = policy.allowed_paths.some((p) =>
       minimatch(path, p.endsWith("/**") ? p : `${p}/**`, { dot: true }) ||

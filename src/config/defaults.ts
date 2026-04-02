@@ -13,4 +13,6 @@ export const DEFAULTS: Partial<Config> = {
   help_cmd: "claude-code --help",
   payload_size_limit_bytes: 8192,
   redact_patterns: ["sk-[A-Za-z0-9]+", "Bearer [A-Za-z0-9._-]+"],
+  bash_timeout_ms: 30_000,
+  bash_output_cap_bytes: 65_536,
 };

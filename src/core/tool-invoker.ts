@@ -54,6 +54,18 @@ export async function invokeToolCall(
   try {
     audit.log(sessionId, "tool_start", { tool: toolName, args }, undefined, toolName);
     const result = await tool.execute(args);
+
+    // Emit bash-specific audit events when the result carries lifecycle flags.
+    if (toolName === "bash" && result !== null && typeof result === "object") {
+      const r = result as Record<string, unknown>;
+      if (r["timed_out"] === true) {
+        audit.log(sessionId, "tool_timeout", { tool: toolName });
+      }
+      if (r["truncated"] === true) {
+        audit.log(sessionId, "tool_output_truncated", { tool: toolName });
+      }
+    }
+
     audit.log(
       sessionId,
       "tool_complete",

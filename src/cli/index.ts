@@ -10,6 +10,7 @@ import { Orchestrator } from "../core/orchestrator.js";
 import "../tools/definitions/read-file.js";
 import "../tools/definitions/write-file.js";
 import "../tools/definitions/list-dir.js";
+import { registerBashTool } from "../tools/definitions/bash.js";
 
 const program = new Command();
 
@@ -24,6 +25,7 @@ program
   .option("-c, --config <path>", "Path to config file", ".agent/config.json")
   .action(async (opts: { config: string }) => {
     const config = loadConfig(opts.config);
+    registerBashTool(config);
 
     const audit = buildAuditLogger(
       config.audit_log_path,
