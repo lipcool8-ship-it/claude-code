@@ -7,6 +7,8 @@ export interface SlashCommandResult {
   exit: boolean;
   /** Optional message to display to the user. */
   message?: string;
+  /** If true, the caller should reload the config from disk. */
+  reload?: boolean;
 }
 
 const HELP_TEXT = `
@@ -15,6 +17,7 @@ Slash commands:
   /remember <key> <value>  Store a user-confirmed fact (e.g. /remember lang Go)
   /forget <key>            Remove a stored fact (overwrite with empty string)
   /status                  Show session info
+  /reload                  Reload the config file from disk
   /exit                    End the session
 `.trim();
 
@@ -26,7 +29,8 @@ export function handleSlashCommand(
   input: string,
   session: SessionInfo,
   store: MemoryStore,
-  audit: AuditLogger
+  audit: AuditLogger,
+  opts?: { tokenBudget?: number }
 ): SlashCommandResult | undefined {
   if (!input.startsWith("/")) return undefined;
 
@@ -71,9 +75,16 @@ export function handleSlashCommand(
         `Model   : ${session.model}`,
         `Policy  : ${session.policyName}`,
         `Turns   : ${session.turnCount}`,
+        `CWD     : ${process.cwd()}`,
       ];
+      if (opts?.tokenBudget !== undefined) {
+        lines.push(`Budget  : ${opts.tokenBudget.toLocaleString()} tokens remaining`);
+      }
       return { exit: false, message: lines.join("\n") };
     }
+
+    case "reload":
+      return { exit: false, reload: true };
 
     default:
       return {

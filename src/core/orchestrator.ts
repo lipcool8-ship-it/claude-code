@@ -12,6 +12,7 @@ import { nextTurn } from "../memory/session.js";
 import type { MemoryStore } from "../memory/store.js";
 import { handleSlashCommand } from "../cli/slash-commands.js";
 import { IdleSummarizer } from "../daemons/idle-summarizer.js";
+import { loadConfig } from "../config/loader.js";
 
 export const MAX_TOOL_CHAIN_DEPTH = 10;
 
@@ -31,13 +32,16 @@ export class Orchestrator {
   private rl: RlInterface;
   private toolChainDepth = 0;
   private summarizer: IdleSummarizer;
+  private tokenBudget: number;
+  private configPath?: string;
 
   constructor(
     config: Config,
     audit: AuditLogger,
     store: MemoryStore,
     session: SessionInfo,
-    rl?: RlInterface
+    rl?: RlInterface,
+    configPath?: string
   ) {
     this.config = config;
     this.audit = audit;
@@ -46,6 +50,8 @@ export class Orchestrator {
     this.client = new LLMClient(config);
     this.rl = rl ?? readline.createInterface({ input, output });
     this.summarizer = new IdleSummarizer(store, this.client);
+    this.tokenBudget = config.token_budget;
+    if (configPath !== undefined) this.configPath = configPath;
   }
 
   /** Returns the current session (updated turn_count etc.) after run() completes. */
@@ -53,11 +59,16 @@ export class Orchestrator {
     return this.session;
   }
 
+  /** Returns the remaining token budget (decremented after each LLM call). */
+  getTokenBudget(): number {
+    return this.tokenBudget;
+  }
+
   private buildPrompt(): string {
     return buildSystemPrompt(
       this.config,
       this.session,
-      this.config.token_budget,
+      this.tokenBudget,
       this.store.getAllFacts()
     );
   }
@@ -78,11 +89,33 @@ export class Orchestrator {
           trimmed,
           this.session,
           this.store,
-          this.audit
+          this.audit,
+          { tokenBudget: this.tokenBudget }
         );
         if (slashResult !== undefined) {
           if (slashResult.message) console.log(`\n${slashResult.message}\n`);
           if (slashResult.exit) break;
+          if (slashResult.reload) {
+            if (this.configPath) {
+              try {
+                const newConfig = loadConfig(this.configPath);
+                this.config = newConfig;
+                this.client = new LLMClient(newConfig);
+                this.tokenBudget = newConfig.token_budget;
+                this.summarizer.stop();
+                this.summarizer = new IdleSummarizer(this.store, this.client);
+                this.summarizer.start();
+                this.messages[0] = { role: "system", content: this.buildPrompt() };
+                console.log("Config reloaded.\n");
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                console.error(`Config reload failed: ${msg}\n`);
+              }
+            } else {
+              console.log("No config path available; reload skipped.\n");
+            }
+            continue;
+          }
           // After a /remember, refresh the system prompt so the new fact is visible
           this.messages[0] = { role: "system", content: this.buildPrompt() };
           continue;
@@ -117,6 +150,8 @@ export class Orchestrator {
       this.audit.log(this.session.id, "llm_error", { error: msg });
       return;
     }
+
+    this.tokenBudget -= response.usage?.total_tokens ?? 0;
 
     this.audit.log(this.session.id, "llm_response", {
       has_content: response.content !== null,
@@ -163,6 +198,9 @@ export class Orchestrator {
           });
           continue;
         }
+        this.audit.log(this.session.id, "write_approved", {
+          tool: toolCall.function.name,
+        });
       }
 
       const result = await invokeToolCall(

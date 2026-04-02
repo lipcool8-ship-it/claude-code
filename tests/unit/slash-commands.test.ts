@@ -94,6 +94,35 @@ describe("handleSlashCommand", () => {
     expect(result!.message).toContain("5");
   });
 
+  it("/status includes CWD", () => {
+    const result = handleSlashCommand("/status", session, store, audit);
+    expect(result!.message).toContain("CWD");
+    expect(result!.message).toContain(process.cwd());
+  });
+
+  it("/status includes token_budget when provided via opts", () => {
+    const result = handleSlashCommand("/status", session, store, audit, { tokenBudget: 42_000 });
+    expect(result!.message).toContain("Budget");
+    expect(result!.message).toContain("42");
+  });
+
+  it("/status omits Budget line when tokenBudget not provided", () => {
+    const result = handleSlashCommand("/status", session, store, audit);
+    expect(result!.message).not.toContain("Budget");
+  });
+
+  it("/reload returns reload=true and does not exit", () => {
+    const result = handleSlashCommand("/reload", session, store, audit);
+    expect(result).toBeDefined();
+    expect(result!.exit).toBe(false);
+    expect(result!.reload).toBe(true);
+  });
+
+  it("/help lists /reload", () => {
+    const result = handleSlashCommand("/help", session, store, audit);
+    expect(result!.message).toContain("/reload");
+  });
+
   it("unknown slash command returns an error message", () => {
     const result = handleSlashCommand("/frobnicate", session, store, audit);
     expect(result!.exit).toBe(false);

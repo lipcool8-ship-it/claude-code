@@ -348,3 +348,149 @@ describe("Orchestrator — slash commands", () => {
     expect(systemMsg?.content).toContain("Go");
   });
 });
+
+describe("Orchestrator — list_dir tool flow", () => {
+  it("executes list_dir without requiring approval and returns entries", async () => {
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(join(tmpDir, "alpha.txt"), "a", "utf8");
+    writeFileSync(join(tmpDir, "beta.txt"), "b", "utf8");
+
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["list the files", "/exit"]);
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    const llm = fakeLlm([
+      {
+        content: null,
+        tool_calls: [
+          { id: "d1", function: { name: "list_dir", arguments: JSON.stringify({ path: tmpDir }) } },
+        ],
+      },
+      { content: "I see the files.", tool_calls: [] },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    // list_dir went through the non-approval path — tool_start and tool_complete logged
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("tool_start");
+    expect(events).toContain("tool_complete");
+    // No write_approved or write_rejected events
+    expect(events).not.toContain("write_approved");
+    expect(events).not.toContain("write_rejected");
+
+    // Two LLM calls: first returned list_dir, second returned text
+    expect(llm.completeWithRepair).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("Orchestrator — token budget tracking", () => {
+  it("decrements tokenBudget by usage.total_tokens returned by LLM", async () => {
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["hello", "/exit"]);
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    const llm = fakeLlm([
+      { content: "Hi!", tool_calls: [], usage: { total_tokens: 250 } },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    expect(orch.getTokenBudget()).toBe(config.token_budget - 250);
+  });
+
+  it("keeps tokenBudget unchanged when LLM response has no usage", async () => {
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["hello", "/exit"]);
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    const llm = fakeLlm([{ content: "Hi!", tool_calls: [] }]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    expect(orch.getTokenBudget()).toBe(config.token_budget);
+  });
+
+  it("/status includes token_budget line with live value", async () => {
+    const session = createSession(store, "test-model", "test");
+    // Use one LLM turn to burn some budget, then check /status
+    const rl = fakeRl(["hello", "/status", "/exit"]);
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    const llm = fakeLlm([
+      { content: "Hi!", tool_calls: [], usage: { total_tokens: 100 } },
+    ]);
+    injectLlm(orch, llm);
+
+    const logLines: string[] = [];
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation((msg: string) => {
+      logLines.push(msg);
+    });
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    const statusOutput = logLines.join("\n");
+    expect(statusOutput).toContain("Budget");
+    expect(statusOutput).toContain((config.token_budget - 100).toLocaleString());
+  });
+});
+
+describe("Orchestrator — config live reload", () => {
+  it("/reload hot-swaps config and resets tokenBudget to new value", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const configPath = join(tmpDir, "agent-config.json");
+    // Write a config file with a distinct token_budget
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        model: "test-model",
+        token_budget: 55_000,
+        policy: {
+          name: "test",
+          allowed_tools: ["read_file", "write_file", "list_dir"],
+          allowed_paths: [`${tmpDir}/**`, tmpDir],
+          deny_patterns: [],
+          require_approval_for_writes: true,
+        },
+      }),
+      "utf8"
+    );
+
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["/reload", "/exit"]);
+    // Pass configPath as 6th constructor arg
+    const orch = new Orchestrator(config, audit, store, session, rl, configPath);
+    const llm = fakeLlm([]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    expect(orch.getTokenBudget()).toBe(55_000);
+  });
+
+  it("/reload with no configPath prints a skip message and does not crash", async () => {
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["/reload", "/exit"]);
+    // No configPath passed
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    const llm = fakeLlm([]);
+    injectLlm(orch, llm);
+
+    const logLines: string[] = [];
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation((msg: string) => {
+      logLines.push(msg);
+    });
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    expect(logLines.join("\n")).toContain("reload skipped");
+    expect(orch.getTokenBudget()).toBe(config.token_budget);
+  });
+});

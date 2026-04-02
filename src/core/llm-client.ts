@@ -4,7 +4,7 @@ import { toolSchemas } from "../tools/registry.js";
 
 export type Message = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_call_id?: string; name?: string };
 export type ToolCall = { id: string; function: { name: string; arguments: string } };
-export type LLMResponse = { content: string | null; tool_calls: ToolCall[] };
+export type LLMResponse = { content: string | null; tool_calls: ToolCall[]; usage?: { total_tokens: number } };
 
 export class LLMClient {
   private client: OpenAI;
@@ -35,13 +35,17 @@ export class LLMClient {
     const choice = response.choices[0];
     if (!choice) throw new Error("LLM returned no choices");
 
-    return {
+    const base: LLMResponse = {
       content: choice.message.content ?? null,
       tool_calls: (choice.message.tool_calls ?? []).map((tc) => ({
         id: tc.id,
         function: { name: tc.function.name, arguments: tc.function.arguments },
       })),
     };
+    if (response.usage) {
+      base.usage = { total_tokens: response.usage.total_tokens };
+    }
+    return base;
   }
 
   /**

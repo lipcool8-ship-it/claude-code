@@ -42,7 +42,7 @@ program
       local_model_fallback: config.local_model_fallback,
     });
 
-    const orchestrator = new Orchestrator(config, audit, store, session);
+    const orchestrator = new Orchestrator(config, audit, store, session, undefined, opts.config);
 
     try {
       await orchestrator.run();
