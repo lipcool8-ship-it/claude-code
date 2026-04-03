@@ -20,7 +20,7 @@ import type { Config } from "../../src/config/schema.js";
 import type { LLMClient, LLMResponse } from "../../src/core/llm-client.js";
 
 // Register tools so tool-invoker can resolve them
-import "../../src/tools/definitions/read-file.js";
+import { registerReadFileTool } from "../../src/tools/definitions/read-file.js";
 import "../../src/tools/definitions/write-file.js";
 import "../../src/tools/definitions/list-dir.js";
 import { registerBashTool } from "../../src/tools/definitions/bash.js";
@@ -55,6 +55,9 @@ beforeEach(() => {
     help_cmd: "claude-code --help",
     payload_size_limit_bytes: 8192,
     redact_patterns: [],
+    bash_timeout_ms: 30_000,
+    bash_output_cap_bytes: 65_536,
+    read_file_max_bytes: 65_536,
     policy: {
       name: "test",
       allowed_tools: ["read_file", "write_file", "list_dir"],
@@ -63,6 +66,8 @@ beforeEach(() => {
       require_approval_for_writes: true,
     },
   };
+  // Re-register read_file so the per-test config (including read_file_max_bytes) takes effect.
+  registerReadFileTool(config);
 });
 
 afterEach(() => {
@@ -787,5 +792,89 @@ describe("Orchestrator — bash tool: non-zero exit code", () => {
     const toolMsg = messages.find((m) => m.role === "tool");
     const parsed = JSON.parse(toolMsg?.content ?? "{}") as { exit_code?: number };
     expect(parsed.exit_code).toBe(7);
+  });
+});
+
+// ─── Orchestrator — read_file tool: truncated file ──────────────────────────
+
+describe("Orchestrator — read_file: truncated large file", () => {
+  it("emits tool_truncated audit event and includes truncation notice in tool result", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const filePath = join(tmpDir, "big.txt");
+    // Write a file that exceeds the tiny cap
+    writeFileSync(filePath, "a".repeat(100), "utf8");
+
+    const smallCapConfig: Config = {
+      ...config,
+      read_file_max_bytes: 20,
+    };
+    registerReadFileTool(smallCapConfig);
+
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["read the big file", "/exit"]);
+    const orch = new Orchestrator(smallCapConfig, audit, store, session, rl);
+    const llm = fakeLlm([
+      {
+        content: null,
+        tool_calls: [
+          { id: "rf1", function: { name: "read_file", arguments: JSON.stringify({ path: filePath }) } },
+        ],
+      },
+      { content: "File was truncated.", tool_calls: [] },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("tool_truncated");
+
+    const messages = (orch as unknown as Record<string, unknown>)["messages"] as Array<{
+      role: string;
+      content: string;
+    }>;
+    const toolMsg = messages.find((m) => m.role === "tool");
+    expect(toolMsg?.content).toContain("truncated");
+  });
+});
+
+// ─── Orchestrator — read_file tool: binary file ──────────────────────────────
+
+describe("Orchestrator — read_file: binary file", () => {
+  it("emits tool_binary_skipped audit event and returns is_binary in tool result", async () => {
+    const { writeFileSync } = await import("node:fs");
+    const filePath = join(tmpDir, "data.bin");
+    // Write a buffer containing a null byte to trigger binary detection
+    writeFileSync(filePath, Buffer.from([0x48, 0x65, 0x6c, 0x6c, 0x00, 0x57, 0x6f, 0x72, 0x6c, 0x64]));
+
+    const session = createSession(store, "test-model", "test");
+    const rl = fakeRl(["read the binary file", "/exit"]);
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    const llm = fakeLlm([
+      {
+        content: null,
+        tool_calls: [
+          { id: "rf2", function: { name: "read_file", arguments: JSON.stringify({ path: filePath }) } },
+        ],
+      },
+      { content: "Binary file skipped.", tool_calls: [] },
+    ]);
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("tool_binary_skipped");
+
+    const messages = (orch as unknown as Record<string, unknown>)["messages"] as Array<{
+      role: string;
+      content: string;
+    }>;
+    const toolMsg = messages.find((m) => m.role === "tool");
+    expect(toolMsg?.content).toContain("is_binary");
   });
 });

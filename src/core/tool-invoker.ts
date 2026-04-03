@@ -66,6 +66,17 @@ export async function invokeToolCall(
       }
     }
 
+    // Emit read_file-specific audit events when the result carries lifecycle flags.
+    if (toolName === "read_file" && result !== null && typeof result === "object") {
+      const r = result as Record<string, unknown>;
+      if (r["truncated"] === true) {
+        audit.log(sessionId, "tool_truncated", { tool: toolName });
+      }
+      if (r["is_binary"] === true) {
+        audit.log(sessionId, "tool_binary_skipped", { tool: toolName });
+      }
+    }
+
     audit.log(
       sessionId,
       "tool_complete",

@@ -7,10 +7,10 @@ import { createSession, endSession } from "../memory/session.js";
 import { Orchestrator } from "../core/orchestrator.js";
 
 // Register all tools
-import "../tools/definitions/read-file.js";
 import "../tools/definitions/write-file.js";
 import "../tools/definitions/list-dir.js";
 import { registerBashTool } from "../tools/definitions/bash.js";
+import { registerReadFileTool } from "../tools/definitions/read-file.js";
 
 const program = new Command();
 
@@ -26,6 +26,7 @@ program
   .action(async (opts: { config: string }) => {
     const config = loadConfig(opts.config);
     registerBashTool(config);
+    registerReadFileTool(config);
 
     const audit = buildAuditLogger(
       config.audit_log_path,

@@ -24,7 +24,7 @@ import { createSession } from "../../src/memory/session.js";
 import type { LLMClient, LLMResponse } from "../../src/core/llm-client.js";
 
 // Register tools (idempotent in tests)
-import "../../src/tools/definitions/read-file.js";
+import { registerReadFileTool } from "../../src/tools/definitions/read-file.js";
 import "../../src/tools/definitions/write-file.js";
 import "../../src/tools/definitions/list-dir.js";
 
@@ -48,6 +48,25 @@ beforeEach(() => {
     logPath: auditPath,
     payloadSizeLimitBytes: 8192,
     redactPatterns: [],
+  });
+  // Re-register read_file so the tool is available for these integration tests.
+  registerReadFileTool({
+    model: "test-model",
+    max_tokens: 512,
+    token_budget: 10_000,
+    audit_log_path: auditPath,
+    db_path: join(tmpDir, "memory.db"),
+    prompt_pack: "default@1.0.0",
+    strict_schema_mode: true,
+    local_model_fallback: false,
+    docs_url: "https://example.com",
+    help_cmd: "test --help",
+    payload_size_limit_bytes: 8192,
+    redact_patterns: [],
+    bash_timeout_ms: 30_000,
+    bash_output_cap_bytes: 65_536,
+    read_file_max_bytes: 65_536,
+    policy,
   });
 });
 

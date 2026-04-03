@@ -9,7 +9,7 @@ import type { Policy } from "../../src/config/schema.js";
 import type { ToolCall } from "../../src/core/llm-client.js";
 
 // Register built-in tools (idempotent)
-import "../../src/tools/definitions/read-file.js";
+import { registerReadFileTool } from "../../src/tools/definitions/read-file.js";
 import "../../src/tools/definitions/write-file.js";
 import "../../src/tools/definitions/list-dir.js";
 
@@ -43,6 +43,31 @@ beforeEach(() => {
     logPath: join(tmpDir, "audit.jsonl"),
     payloadSizeLimitBytes: 8192,
     redactPatterns: [],
+  });
+  // Re-register read_file with a permissive config so the tool is available.
+  registerReadFileTool({
+    model: "test-model",
+    max_tokens: 512,
+    token_budget: 10_000,
+    audit_log_path: join(tmpDir, "audit.jsonl"),
+    db_path: join(tmpDir, "memory.db"),
+    prompt_pack: "default@1.0.0",
+    strict_schema_mode: true,
+    local_model_fallback: false,
+    docs_url: "https://example.com",
+    help_cmd: "test --help",
+    payload_size_limit_bytes: 8192,
+    redact_patterns: [],
+    read_file_max_bytes: 65_536,
+    bash_timeout_ms: 30_000,
+    bash_output_cap_bytes: 65_536,
+    policy: {
+      name: "open",
+      allowed_tools: ["read_file", "write_file", "list_dir"],
+      allowed_paths: ["/**", "./**"],
+      deny_patterns: [],
+      require_approval_for_writes: false,
+    },
   });
 });
 

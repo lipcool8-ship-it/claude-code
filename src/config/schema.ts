@@ -34,6 +34,7 @@ export const ConfigSchema = z.object({
     .default(["sk-[A-Za-z0-9]+", "Bearer [A-Za-z0-9._-]+"]),
   bash_timeout_ms: z.number().int().positive().default(30_000),
   bash_output_cap_bytes: z.number().int().positive().default(65_536),
+  read_file_max_bytes: z.number().int().positive().default(65_536),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
