@@ -6,7 +6,7 @@ export interface ToolDefinition {
     properties: Record<string, { type: string; description: string }>;
     required: string[];
   };
-  execute: (args: Record<string, unknown>) => Promise<unknown>;
+  execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<unknown>;
 }
 
 const registry = new Map<string, ToolDefinition>();

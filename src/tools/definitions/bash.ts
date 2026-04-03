@@ -11,6 +11,7 @@ export interface BashResult {
   output: string;
   truncated: boolean;
   timed_out: boolean;
+  cancelled: boolean;
 }
 
 /**
@@ -58,7 +59,7 @@ export function registerBashTool(config: Config): void {
       },
       required: ["command"],
     },
-    async execute(args): Promise<BashResult> {
+    async execute(args, signal): Promise<BashResult> {
       const command = String(args["command"] ?? "");
       if (!command) throw new Error("bash: 'command' argument is required");
 
@@ -77,6 +78,7 @@ export function registerBashTool(config: Config): void {
         let totalBytes = 0;
         let truncated = false;
         let timedOut = false;
+        let cancelled = false;
         let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
         const proc = spawn("/bin/sh", ["-c", command], {
@@ -105,6 +107,22 @@ export function registerBashTool(config: Config): void {
           forceKillTimer = setTimeout(() => killGroup("SIGKILL"), 500);
         }, timeoutMs);
 
+        // Wire cancellation: abort signal kills the process group.
+        const onAbort = () => {
+          cancelled = true;
+          killGroup("SIGTERM");
+          forceKillTimer = setTimeout(() => killGroup("SIGKILL"), 500);
+        };
+        if (signal) {
+          if (signal.aborted) {
+            // Already aborted before we even started — skip spawning work.
+            clearTimeout(timer);
+            resolve({ exit_code: null, output: "", truncated: false, timed_out: false, cancelled: true });
+            return;
+          }
+          signal.addEventListener("abort", onAbort, { once: true });
+        }
+
         const onData = (chunk: Buffer) => {
           if (truncated) return;
           const remaining = outputCapBytes - totalBytes;
@@ -124,21 +142,24 @@ export function registerBashTool(config: Config): void {
         proc.on("error", (err) => {
           clearTimeout(timer);
           clearTimeout(forceKillTimer);
+          signal?.removeEventListener("abort", onAbort);
           reject(err);
         });
 
         proc.on("close", (code) => {
           clearTimeout(timer);
           clearTimeout(forceKillTimer);
+          signal?.removeEventListener("abort", onAbort);
           let output = Buffer.concat(chunks).toString("utf8");
           if (truncated) {
             output += `\n[Output truncated at ${outputCapBytes} bytes]`;
           }
           resolve({
-            exit_code: timedOut ? null : code,
+            exit_code: (timedOut || cancelled) ? null : code,
             output,
             truncated,
             timed_out: timedOut,
+            cancelled,
           });
         });
       });

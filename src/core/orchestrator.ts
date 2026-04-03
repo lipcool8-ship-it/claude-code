@@ -36,6 +36,7 @@ export class Orchestrator {
   private summarizer: IdleSummarizer;
   private tokenBudget: number;
   private configPath?: string;
+  private currentTurnController: AbortController | null = null;
 
   constructor(
     config: Config,
@@ -66,6 +67,15 @@ export class Orchestrator {
     return this.tokenBudget;
   }
 
+  /**
+   * Abort the currently-running turn, if any.
+   * Safe to call when no turn is active (no-op).
+   * Called internally by the SIGINT handler; also exposed for tests.
+   */
+  cancelCurrentTurn(): void {
+    this.currentTurnController?.abort();
+  }
+
   private buildPrompt(): string {
     return buildSystemPrompt(
       this.config,
@@ -80,6 +90,11 @@ export class Orchestrator {
 
     this.summarizer.start();
     console.log('Agent ready. Type your request, or /help for commands.\n');
+
+    // SIGINT cancels the active turn and returns to the prompt.
+    // It is only active for the lifetime of run() so it does not leak.
+    const onSigint = () => { this.cancelCurrentTurn(); };
+    process.on("SIGINT", onSigint);
 
     try {
       while (true) {
@@ -135,15 +150,35 @@ export class Orchestrator {
         this.audit.log(this.session.id, "user_input", { length: userInput.length });
         this.messages.push({ role: "user", content: userInput });
 
-        await this.runTurn();
+        // Create a per-turn abort controller.  The SIGINT handler (above) aborts it.
+        this.currentTurnController = new AbortController();
+        const signal = this.currentTurnController.signal;
+        // Snapshot message count so we can roll back on cancellation.
+        const messagesLenBefore = this.messages.length;
+
+        try {
+          await this.runTurn(signal);
+        } catch (err) {
+          if (signal.aborted) {
+            // Roll back any partial messages pushed during the cancelled turn.
+            this.messages.splice(messagesLenBefore);
+            console.log("\n[Agent] Turn cancelled.\n");
+            this.audit.log(this.session.id, "turn_cancelled", {});
+          } else {
+            throw err;
+          }
+        } finally {
+          this.currentTurnController = null;
+        }
       }
     } finally {
+      process.removeListener("SIGINT", onSigint);
       this.summarizer.stop();
       this.rl.close();
     }
   }
 
-  private async runTurn(): Promise<void> {
+  private async runTurn(signal: AbortSignal): Promise<void> {
     this.session = nextTurn(this.session, this.store);
 
     // Refresh the system prompt with current turn_count and latest facts
@@ -151,8 +186,9 @@ export class Orchestrator {
 
     let response;
     try {
-      response = await this.client.completeWithRepair(this.messages);
+      response = await this.client.completeWithRepair(this.messages, signal);
     } catch (err) {
+      if (signal.aborted) throw err; // Re-throw cancellation to run()
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`\n[Agent] LLM error: ${msg}\n`);
       this.audit.log(this.session.id, "llm_error", { error: msg });
@@ -220,7 +256,8 @@ export class Orchestrator {
         toolCall,
         this.config.policy,
         this.audit,
-        this.session.id
+        this.session.id,
+        signal
       );
 
       this.messages.push({
@@ -245,7 +282,7 @@ export class Orchestrator {
       });
       return;
     }
-    await this.runTurn();
+    await this.runTurn(signal);
     this.toolChainDepth = 0;
   }
 

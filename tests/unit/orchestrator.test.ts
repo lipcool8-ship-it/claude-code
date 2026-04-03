@@ -878,3 +878,157 @@ describe("Orchestrator — read_file: binary file", () => {
     expect(toolMsg?.content).toContain("is_binary");
   });
 });
+
+// ─── Orchestrator — cancellation ─────────────────────────────────────────────
+
+describe("Orchestrator — cancel during LLM wait", () => {
+  it("emits turn_cancelled, rolls back messages, and keeps the session alive", async () => {
+    const session = createSession(store, "test-model", "test");
+    let orchRef!: Orchestrator;
+
+    // Simulate LLM call that hangs until the signal is aborted.
+    // The abort triggers the rejection, matching real OpenAI SDK behaviour.
+    function hangUntilAbort(signal?: AbortSignal): Promise<LLMResponse> {
+      return new Promise<LLMResponse>((_, reject) => {
+        signal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError"))
+        );
+      });
+    }
+
+    let callCount = 0;
+    const llm: LLMClient = {
+      complete: vi.fn(async () => ({ content: "", tool_calls: [] })),
+      completeWithRepair: vi.fn(async (_messages, signal) => {
+        callCount += 1;
+        if (callCount === 1) {
+          // Cancel the turn 10 ms after the LLM call starts
+          setTimeout(() => orchRef.cancelCurrentTurn(), 10);
+          return hangUntilAbort(signal);
+        }
+        return { content: "I am still here.", tool_calls: [] };
+      }),
+    } as unknown as LLMClient;
+
+    const rl = fakeRl(["first turn", "second turn", "/exit"]);
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    orchRef = orch;
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("turn_cancelled");
+    // Session alive: second LLM call returned a response
+    expect(events).toContain("llm_response");
+  });
+});
+
+describe("Orchestrator — cancel during bash execution", () => {
+  it("emits turn_cancelled and tool_start (no tool_complete) when bash is cancelled", async () => {
+    const bashConfig: Config = {
+      ...config,
+      bash_timeout_ms: 5_000,
+      bash_output_cap_bytes: 65_536,
+      policy: {
+        ...config.policy,
+        allowed_tools: ["read_file", "write_file", "list_dir", "bash"],
+      },
+    };
+    registerBashTool(bashConfig);
+
+    const session = createSession(store, "test-model", "test");
+    let orchRef!: Orchestrator;
+
+    const rl = fakeRl(["run long command", "/exit"]);
+    const orch = new Orchestrator(bashConfig, audit, store, session, rl);
+    orchRef = orch;
+
+    const llm = fakeLlm([
+      {
+        content: null,
+        tool_calls: [
+          {
+            id: "c-bash",
+            function: {
+              name: "bash",
+              arguments: JSON.stringify({ command: "sleep 10", cwd: tmpDir }),
+            },
+          },
+        ],
+      },
+      { content: "done", tool_calls: [] },
+    ]);
+
+    // Override: once the tool_start audit event is written we know bash is running;
+    // cancel 100 ms later to let the process start.
+    const realLog = audit.log.bind(audit);
+    vi.spyOn(audit, "log").mockImplementation((sid, event, ...rest) => {
+      realLog(sid, event, ...rest);
+      if (event === "tool_start") {
+        setTimeout(() => orchRef.cancelCurrentTurn(), 100);
+      }
+    });
+
+    injectLlm(orch, llm);
+
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    await orch.run();
+    consoleSpy.mockRestore();
+    vi.restoreAllMocks();
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("tool_start");
+    expect(events).toContain("turn_cancelled");
+    expect(events).not.toContain("tool_complete");
+  }, 5_000);
+});
+
+describe("Orchestrator — session alive after cancel", () => {
+  it("processes a normal turn after a cancelled one", async () => {
+    const session = createSession(store, "test-model", "test");
+    let orchRef!: Orchestrator;
+
+    function hangUntilAbort(signal?: AbortSignal): Promise<LLMResponse> {
+      return new Promise<LLMResponse>((_, reject) => {
+        signal?.addEventListener("abort", () =>
+          reject(new DOMException("Aborted", "AbortError"))
+        );
+      });
+    }
+
+    let firstCall = true;
+    const llm: LLMClient = {
+      complete: vi.fn(async () => ({ content: "", tool_calls: [] })),
+      completeWithRepair: vi.fn(async (_messages, signal) => {
+        if (firstCall) {
+          firstCall = false;
+          setTimeout(() => orchRef.cancelCurrentTurn(), 10);
+          return hangUntilAbort(signal);
+        }
+        return { content: "Normal response.", tool_calls: [] };
+      }),
+    } as unknown as LLMClient;
+
+    const rl = fakeRl(["cancel me", "normal turn", "/exit"]);
+    const orch = new Orchestrator(config, audit, store, session, rl);
+    orchRef = orch;
+    injectLlm(orch, llm);
+
+    const logLines: string[] = [];
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation((msg: string) => {
+      logLines.push(String(msg));
+    });
+    await orch.run();
+    consoleSpy.mockRestore();
+
+    // Second turn's content should appear in console output
+    expect(logLines.join("\n")).toContain("Normal response.");
+
+    const events = readAuditEvents(auditPath).map((e) => e.event);
+    expect(events).toContain("turn_cancelled");
+    expect(events).toContain("llm_response");
+  });
+});

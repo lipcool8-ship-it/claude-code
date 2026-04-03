@@ -18,7 +18,7 @@ export class LLMClient {
     });
   }
 
-  async complete(messages: Message[]): Promise<LLMResponse> {
+  async complete(messages: Message[], signal?: AbortSignal): Promise<LLMResponse> {
     const tools = toolSchemas() as OpenAI.Chat.Completions.ChatCompletionTool[];
 
     const createParams: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
@@ -30,7 +30,7 @@ export class LLMClient {
       createParams.tools = tools;
       createParams.tool_choice = "auto";
     }
-    const response = await this.client.chat.completions.create(createParams);
+    const response = await this.client.chat.completions.create(createParams, { signal });
 
     const choice = response.choices[0];
     if (!choice) throw new Error("LLM returned no choices");
@@ -51,8 +51,8 @@ export class LLMClient {
   /**
    * Complete with one repair retry on malformed tool call JSON.
    */
-  async completeWithRepair(messages: Message[]): Promise<LLMResponse> {
-    const first = await this.complete(messages);
+  async completeWithRepair(messages: Message[], signal?: AbortSignal): Promise<LLMResponse> {
+    const first = await this.complete(messages, signal);
 
     // Validate tool call argument JSON
     for (const tc of first.tool_calls) {
@@ -72,7 +72,7 @@ export class LLMClient {
               "Your previous response was not valid JSON. Please retry with a valid JSON object for the tool call arguments.",
           },
         ];
-        return this.complete(repairMessages);
+        return this.complete(repairMessages, signal);
       }
     }
 

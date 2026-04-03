@@ -15,7 +15,8 @@ export async function invokeToolCall(
   toolCall: ToolCall,
   policy: Policy,
   audit: AuditLogger,
-  sessionId: string
+  sessionId: string,
+  signal?: AbortSignal
 ): Promise<InvokeResult> {
   const toolName = toolCall.function.name;
   let args: Record<string, unknown>;
@@ -53,7 +54,7 @@ export async function invokeToolCall(
 
   try {
     audit.log(sessionId, "tool_start", { tool: toolName, args }, undefined, toolName);
-    const result = await tool.execute(args);
+    const result = await tool.execute(args, signal);
 
     // Emit bash-specific audit events when the result carries lifecycle flags.
     if (toolName === "bash" && result !== null && typeof result === "object") {
@@ -77,6 +78,10 @@ export async function invokeToolCall(
       }
     }
 
+    // Re-throw if the turn was cancelled while the tool was running.
+    // This must run before tool_complete so the event is never emitted for cancelled turns.
+    signal?.throwIfAborted();
+
     audit.log(
       sessionId,
       "tool_complete",
@@ -86,6 +91,8 @@ export async function invokeToolCall(
     );
     return { tool_call_id: toolCall.id, tool_name: toolName, result };
   } catch (err) {
+    // Re-throw cancellation so the Orchestrator can handle it at the turn level.
+    if (signal?.aborted) throw err;
     const error = err instanceof Error ? err.message : String(err);
     audit.log(sessionId, "tool_error", { tool: toolName, error });
     return { tool_call_id: toolCall.id, tool_name: toolName, result: null, error };

@@ -206,3 +206,38 @@ describe("bash tool — cwd escape rejection", () => {
     ).rejects.toThrow("outside allowed paths");
   });
 });
+
+// ─── execute: AbortSignal cancellation ────────────────────────────────────────
+
+describe("bash tool — AbortSignal cancellation", () => {
+  it("resolves with cancelled=true when the abort signal fires during execution", async () => {
+    const tool = getBashTool();
+    const controller = new AbortController();
+
+    // Schedule abort 100 ms after execution starts so the sleep command is running.
+    setTimeout(() => controller.abort(), 100);
+
+    const result = await tool.execute(
+      { command: "sleep 10", cwd: tmpDir },
+      controller.signal
+    ) as { exit_code: number | null; cancelled: boolean; timed_out: boolean };
+
+    expect(result.cancelled).toBe(true);
+    expect(result.timed_out).toBe(false);
+    expect(result.exit_code).toBeNull();
+  }, 3_000);
+
+  it("resolves immediately with cancelled=true when signal is already aborted on entry", async () => {
+    const tool = getBashTool();
+    const controller = new AbortController();
+    controller.abort(); // Pre-abort
+
+    const result = await tool.execute(
+      { command: "echo should-not-run", cwd: tmpDir },
+      controller.signal
+    ) as { cancelled: boolean; exit_code: number | null };
+
+    expect(result.cancelled).toBe(true);
+    expect(result.exit_code).toBeNull();
+  });
+});
